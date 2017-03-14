@@ -8,18 +8,18 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 
-# weights = (1+inputsz+rnnwidth)*rnnwidth + (1+rnnwidth) * 1
-# for inputsz = 1, rnnwidth=2 weights = (4*2) + 3 = 11
-# for inputsz = 1, rnnwidth=3 weights = (5*3) + 4 = 19
-# rnnwidth=4, sequence_sz=5 _works_ converging to 100% accuracy around epoch 4000
-rnnwidth = 4
+# This version will get feedback on _each_ step, as opposed
+# to at the _end_ of the sequence
+# I would have expected _this_ to succeed, but it fails as well.
+
+# Because I've precomputed the weights, unfortunately, this version is
+# _constrained_ to use rnnwidth=2 see tfsimplen.py for
+# making this truly parametrizable
+rnnwidth = 2
 batch_sz = 1024
-sequence_sz = 5
+sequence_sz = 8
 lr=0.002
-# Because I've made this parametrizable, I don't have
-# precomputed weights on this version.
-# for a precomputed weight for rnnwidth=2 see tfsimple.py
-preinitialize=False
+preinitialize=True
 # tensorboard --logdir="/tmp/wtf"
 tensorboarddir="/tmp/wtf"
 
@@ -28,10 +28,12 @@ def generate_data(batchsz, sequencesz):
 	data = []
 	target = []
 	for q in range(0, batchsz):
-		data.append([random.randint(0,1) for _ in range(0, sequencesz)])
+		d = [random.randint(0,1) for _ in range(0, sequencesz)]
+		t = reduce(lambda acc, x: [x] if len(acc) == 0 else acc + [0 if acc[-1] == x else 1], d, [])
+		data.append(d)
+		target.append(t)
 	data = np.array(data)
-	target = np.sum(data,1)
-	target = np.mod(target,2).reshape(target.shape[0],1)
+	target = np.array(target)
 	return data, target
 
 def spigot(x):
@@ -57,8 +59,14 @@ def main():
 			x_ = tf.placeholder(dtype=tf.float32, shape=(None, sequence_sz), name="x")
 
 		with tf.variable_scope("target"):
-			y_ = tf.placeholder(dtype=tf.float32, shape=(None, 1), name="y")
+			y_ = tf.placeholder(dtype=tf.float32, shape=(None, sequence_sz), name="y")
 
+		with tf.variable_scope("rnn", reuse=None) as scope:
+			with tf.variable_scope("basic_rnn_cell", reuse=None):
+				weights = tf.get_variable("weights", [3, rnnwidth], dtype=tf.float32, initializer=spigot([[-10,-10],[5,5],[-5,-5]]))
+				biases = tf.get_variable("biases", [rnnwidth], dtype=tf.float32, initializer=spigot([5,15]))
+
+		final_pieces = []
 		for i in range(0, sequence_sz):
 			with tf.variable_scope("input", reuse=True) as scope:
 				piece = tf.slice(x_, [0, i], [-1,1], name="slice_%d" % (i))
@@ -68,13 +76,16 @@ def main():
 				rnn = tf.contrib.rnn.BasicRNNCell(rnnwidth)
 				if i == 0:
 					state = initial_state = rnn.zero_state(batch_sz, tf.float32)
-				output, state = rnn(piece, state)
+				with tf.variable_scope("basic_rnn_cell", reuse=True) as scope:
+					output, state = rnn(piece, state, scope=scope)
 
-		with tf.variable_scope("fc") as scope:
-			W = tf.get_variable("W", [rnnwidth, 1], dtype=tf.float32, initializer=spigot([[-5],[5]]))
-			b = tf.get_variable("b", [1, 1], dtype=tf.float32, initializer=spigot([[-5]]))
-			final = tf.nn.sigmoid(tf.matmul(output, W) + b)
+			with tf.variable_scope("fc", reuse=reuse) as scope:
+				W = tf.get_variable("W", [rnnwidth, 1], dtype=tf.float32, initializer=spigot([[-5],[5]]))
+				b = tf.get_variable("b", [1, 1], dtype=tf.float32, initializer=spigot([[-5]]))
+				f = tf.nn.sigmoid(tf.matmul(output, W) + b)
+				final_pieces.append(f[:,0])
 
+		final = tf.transpose(tf.stack(final_pieces))
 		with tf.variable_scope("loss") as scope:
 			cost = -tf.reduce_mean(tf.multiply(y_, tf.log(final)) + tf.multiply((tf.ones(final.shape) + tf.negative(y_)), tf.log(tf.ones(final.shape) + tf.negative(final))))
 			accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.cast(tf.greater_equal(final, 0.5), dtype=tf.float32), y_), dtype=tf.float32))

@@ -121,6 +121,7 @@ def main():
 			if (epoch % 128) == 0:
 				print(epoch, c, a)
 
+		np_data, np_targets = generate_data(batch_sz, sequence_sz)
 		o, c = sess.run([final, cost], feed_dict={ x_: np_data, y_: np_targets })
 		writer.close()
 
